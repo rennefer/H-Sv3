@@ -103,13 +103,48 @@ const MAX_CROP_W = 260;
 async function load() {
   const res = await fetch('entries.json');
   ENTRIES = await res.json();
+  ENTRIES.forEach(e => { e._norm = normOldTranslit(e.text); });
   document.getElementById('stats').textContent = ENTRIES.length.toLocaleString() + ' entries loaded';
   render('');
 }
 
+/* Fold Budge's own (1920) transliteration conventions toward modern MdC, so a
+   search typed in either style still matches. Confirmed against real page
+   crops, not guessed from the OCR text (which frequently hallucinates z/j/y/w
+   out of misread macrons and diacritics):
+     - "tch" is how Budge writes ḏ ("dj") -- same bucket as z/d used elsewhere
+       on this site, so fold to 'd'.
+     - j has the same value as modern i -- fold to 'i'.
+     - w is written "u" throughout (uai-t, uaua, ua-t, all next to the
+       quail-chick sign) -- fold to 'u'.
+     - the accent on a (á/ā) is ambiguous: it can stand for either aleph (a)
+       or yod (i) depending on the entry, so it's folded to a two-character
+       token that a search for either letter will still find.
+     - é/ē turned out to not be a real thing in Budge's own text (every
+       candidate was an OCR misread of á/ā) -- folded to plain 'a' just in
+       case any genuine instance turns up.
+     - z was checked and doesn't occur as a real letter in Budge's headwords
+       (only as OCR noise), so it's left alone -- no fold needed.
+     - "th" is how Budge writes ṯ ("tj"), distinct from "tch" (ḏ) above --
+       fold to 't'.
+     - "sh" is how Budge writes š -- fold to 's'.
+     - "kh" is how Budge writes ḫ -- fold to 'x'. */
+function normOldTranslit(s) {
+  return (s || '')
+    .toLowerCase()
+    .replace(/tch/g, 'd')
+    .replace(/kh/g, 'x')
+    .replace(/th/g, 't')
+    .replace(/sh/g, 's')
+    .replace(/[áā]/g, 'ai')
+    .replace(/[éē]/g, 'a')
+    .replace(/j/g, 'i')
+    .replace(/w/g, 'u');
+}
+
 function render(query) {
-  const q = query.trim().toLowerCase();
-  currentMatches = q ? ENTRIES.filter(e => e.text.toLowerCase().includes(q)) : ENTRIES;
+  const q = normOldTranslit(query.trim());
+  currentMatches = q ? ENTRIES.filter(e => e._norm.includes(q)) : ENTRIES;
   shown = 0;
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '';
