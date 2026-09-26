@@ -146,9 +146,10 @@ async function load() {
   ENTRIES = await res.json();
   ENTRIES.forEach(e => {
     e._norm = normOldTranslit(e.text);
-    e._head = normOldTranslit(extractHeadword(e.text));
-    e._headCanon = canonicalizeWeakRuns(e._head);
-    e._headSkel = stripWeak(e._head);
+    e._headTokens = extractHeadTokens(e.text).map(normOldTranslit);
+    e._head = e._headTokens[0] || ''; // first token, kept for the length tie-break
+    e._headCanon = e._headTokens.map(canonicalizeWeakRuns);
+    e._headSkel = e._headTokens.map(stripWeak);
   });
   document.getElementById('stats').textContent = ENTRIES.length.toLocaleString() + ' entries loaded';
   render('');
@@ -156,19 +157,19 @@ async function load() {
 
 /* Budge's printed entries lead with the bold Egyptian headword, then the
    definition/gloss prose starts (e.g. "au, sfem., to be, to exist..."). The
-   bolding itself doesn't survive OCR, and a lot of this raw/unverified text
-   is garbled enough that it never even produces a comma to mark where the
-   headword ends -- so rather than reading "up to the first punctuation"
-   (which on a punctuation-less line can run on for 40 characters and
-   accidentally swallow unrelated words further into the line), this just
-   takes the first whitespace-delimited token. Real transliterations that are
-   themselves hyphenated ("Aakhu-Set-heru-kheru") still come through whole,
-   since there's no space inside them; a genuine multi-word headword only
-   contributes its first word, which is a safe under-match rather than the
-   over-matching the punctuation-based version could produce. */
-function extractHeadword(text) {
-  const m = (text || '').trim().match(/^\S+/);
-  return m ? m[0] : '';
+   bolding itself doesn't survive OCR, and the column-segmentation that built
+   this raw dataset sometimes bleeds a few stray words off the tail of the
+   PREVIOUS entry onto the front of this one's text (e.g. "wo Wl TS jaur-t
+   ..." where the real headword "jaur-t" is the 4th word, or "make tp she
+   mes[ut]" where it's the 4th word again) -- so rather than trusting only
+   the very first whitespace-delimited token as *the* headword, this keeps a
+   short run of leading tokens as candidates and lets multiHeadTier() (below)
+   check all of them, favouring the first but still finding the real
+   headword when it's been pushed a few words in by that kind of bleed. */
+const HEAD_LOOKAHEAD = 6;
+function extractHeadTokens(text) {
+  const words = (text || '').trim().split(/\s+/).slice(0, HEAD_LOOKAHEAD);
+  return words.length ? words : [''];
 }
 
 /* Fold Budge's own (1920) transliteration conventions toward modern MdC, so a
@@ -204,7 +205,12 @@ function extractHeadword(text) {
        stored entry or in what someone types, folds to the same string.
      - Budge freely hyphenates between syllables/components ("aau-t",
        "Au-t-a") where a modern-style query is typed as one solid word --
-       the hyphen carries no sound of its own, so it's dropped entirely. */
+       the hyphen carries no sound of its own, so it's dropped entirely.
+     - Budge brackets a letter he's reconstructing/unsure of ("Neb[t]", and
+       OCR sometimes mismatches the bracket pair, e.g. "Neb(t]") -- these
+       carry no sound either and just break substring matching against a
+       plain-text query like "Nebt", so every bracket/paren character is
+       dropped too, the same way the hyphen is. */
 function normOldTranslit(s) {
   return (s || '')
     .toLowerCase()
@@ -218,24 +224,44 @@ function normOldTranslit(s) {
     .replace(/y/g, 'ii')
     .replace(/w/g, 'u')
     .replace(/e/g, '')
-    .replace(/-/g, '');
+    .replace(/-/g, '')
+    .replace(/[()\[\]]/g, '');
 }
 
-/* 0 = headword is exactly the query, 1 = headword starts with it, 2 = query
-   turns up somewhere inside the headword (e.g. as part of a compound like
-   "Aakhu-Set-heru-kheru"), 3 = no headword match, only the body/definition
-   text matches. The book's own internal ordering (roughly by hieroglyphic
-   sign group, not Latin alphabetical order) is what's left within a tier, so
-   an exact headword like "set" itself now outranks a compound word that
-   merely contains "set", instead of the two being tied and falling back to
-   whichever happened to come first in the book. */
-function headTier(head, q) {
-  if (!head || !q) return 3;
-  const idx = head.indexOf(q);
-  if (idx === -1) return 3;
-  if (head === q) return 0;
-  if (idx === 0) return 1;
-  return 2;
+/* Tier scale, best (lowest) first:
+     0 = the 1st leading token is exactly the query
+     1 = the 1st leading token starts with the query
+     2 = a later leading token (2nd-6th) is exactly the query -- this is
+         what recovers a real headword that OCR bleed pushed a few words in
+     3 = a later leading token starts with the query
+     4 = the query turns up inside the 1st token, but not at its start (e.g.
+         as part of a compound like "Aakhu-Set-heru-kheru")
+     5 = no leading-token match at all -- only the body/definition text
+         matched somewhere.
+   A later token only counts as a candidate if it's at least 3 characters --
+   a bare 1-2 letter fragment bleeding in from the previous entry (like the
+   "wo", "Wl", "TS" ahead of a real "jaur-t") is far more likely to be OCR
+   noise than a genuine short headword sitting in 2nd position; a genuine
+   short headword ("at", "ku") is always in 1st position and so is already
+   covered by tier 0/1. Within a tier, the book's own internal ordering
+   (roughly by hieroglyphic sign group) is what's left to decide order. */
+function multiHeadTier(tokens, q) {
+  if (!q || !tokens || !tokens.length) return 5;
+  const head = tokens[0];
+  if (head) {
+    if (head === q) return 0;
+    if (head.indexOf(q) === 0) return 1;
+  }
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t && t.length >= 3 && t === q) return 2;
+  }
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t && t.length >= 3 && t.indexOf(q) === 0) return 3;
+  }
+  if (head && head.indexOf(q) !== -1) return 4;
+  return 5;
 }
 
 /* Budge (1920) sometimes writes the weak letters -- a/i/u, standing in for
@@ -294,20 +320,20 @@ function render(query) {
   if (q) {
     currentMatches = ENTRIES.filter(e => e._norm.includes(q));
     if (currentMatches.length) {
-      rankAndSort(currentMatches, e => headTier(e._head, q));
+      rankAndSort(currentMatches, e => multiHeadTier(e._headTokens, q));
     } else {
       const qCanon = canonicalizeWeakRuns(q);
-      currentMatches = ENTRIES.filter(e => e._headCanon.includes(qCanon));
+      currentMatches = ENTRIES.filter(e => e._headCanon.some(t => t.includes(qCanon)));
       if (currentMatches.length) {
         usedFallback = 'canon';
-        rankAndSort(currentMatches, e => headTier(e._headCanon, qCanon));
+        rankAndSort(currentMatches, e => multiHeadTier(e._headCanon, qCanon));
       } else {
         const qSkel = stripWeak(q);
         if (qSkel) {
-          currentMatches = ENTRIES.filter(e => e._headSkel.includes(qSkel));
+          currentMatches = ENTRIES.filter(e => e._headSkel.some(t => t.includes(qSkel)));
           if (currentMatches.length) {
             usedFallback = 'skel';
-            rankAndSort(currentMatches, e => headTier(e._headSkel, qSkel));
+            rankAndSort(currentMatches, e => multiHeadTier(e._headSkel, qSkel));
           }
         }
       }
