@@ -73,9 +73,47 @@
     font-family: inherit;
   }
   .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+
+  /* embedded mode (?embed=1): shown inside the manuscript pages' right-side
+     search panel -- no page header/intro, and re-themed with the same dark
+     palette/typography as the Search & Paleography tabs so it reads as one
+     more tab rather than a different site glued on. Everything below just
+     overrides the custom properties + font already used throughout the
+     rules above, so no selector needs duplicating. */
+  body.embed-mode {
+    --bg: #2f2a22;       /* --panel-bg on the manuscript pages */
+    --panel: #241f19;    /* --panel-input-bg */
+    --ink: #efe6d2;      /* --ink-on-dark */
+    --muted: #c6b99b;    /* --ink-soft-on-dark */
+    --accent: #d97a45;   /* --rubric */
+    --border: #55493a;   /* --panel-line */
+    font-family: 'Inter', Georgia, 'Times New Roman', serif;
+  }
+  body.embed-mode header { display: none; }
+  body.embed-mode .search-wrap { padding: 14px 16px; top: 0; }
+  body.embed-mode #q { background: var(--panel); color: var(--ink); }
+  body.embed-mode #q::placeholder { color: var(--muted); }
+  body.embed-mode #q:focus { outline: 2px solid #7a9c82; outline-offset: 1px; }
+  body.embed-mode main { padding: 6px 16px 40px; max-width: none; }
+  /* stack image above its Vol/page reference (rather than image + text side
+     by side), and drop the OCR'd definition text entirely -- the crop image
+     already shows that, so repeating it as text next to the image is
+     redundant in this compact panel context */
+  body.embed-mode .entry { flex-direction: column; align-items: flex-start; gap: 5px; overflow-x: auto; }
+  body.embed-mode .entry .txt { display: none; }
+  body.embed-mode .entry .meta { margin-top: 0; }
+  body.embed-mode ::-webkit-scrollbar { width: 10px; height: 10px; }
+  body.embed-mode ::-webkit-scrollbar-track { background: var(--bg); }
+  body.embed-mode ::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 6px; border: 2px solid var(--bg); }
 </style>
 </head>
 <body>
+<script>
+  if (new URLSearchParams(location.search).get('embed') === '1') {
+    document.body.classList.add('embed-mode');
+  }
+</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <header>
   <h1>Budge — An Egyptian Hieroglyphic Dictionary (raw extraction)</h1>
   <div class="sub">
@@ -99,13 +137,35 @@ let shown = 0;
 const PAGE_SIZE = 60;
 let currentMatches = [];
 const MAX_CROP_W = 260;
+const SEARCH_LIMIT = 10; // a search shows only its top 10 most-likely matches; browsing without a query still pages through everything
+let isSearching = false;
 
 async function load() {
   const res = await fetch('entries.json');
   ENTRIES = await res.json();
-  ENTRIES.forEach(e => { e._norm = normOldTranslit(e.text); });
+  ENTRIES.forEach(e => {
+    e._norm = normOldTranslit(e.text);
+    e._head = normOldTranslit(extractHeadword(e.text));
+  });
   document.getElementById('stats').textContent = ENTRIES.length.toLocaleString() + ' entries loaded';
   render('');
+}
+
+/* Budge's printed entries lead with the bold Egyptian headword, then the
+   definition/gloss prose starts (e.g. "au, sfem., to be, to exist..."). The
+   bolding itself doesn't survive OCR, and a lot of this raw/unverified text
+   is garbled enough that it never even produces a comma to mark where the
+   headword ends -- so rather than reading "up to the first punctuation"
+   (which on a punctuation-less line can run on for 40 characters and
+   accidentally swallow unrelated words further into the line), this just
+   takes the first whitespace-delimited token. Real transliterations that are
+   themselves hyphenated ("Aakhu-Set-heru-kheru") still come through whole,
+   since there's no space inside them; a genuine multi-word headword only
+   contributes its first word, which is a safe under-match rather than the
+   over-matching the punctuation-based version could produce. */
+function extractHeadword(text) {
+  const m = (text || '').trim().match(/^\S+/);
+  return m ? m[0] : '';
 }
 
 /* Fold Budge's own (1920) transliteration conventions toward modern MdC, so a
@@ -128,7 +188,13 @@ async function load() {
      - "th" is how Budge writes ṯ ("tj"), distinct from "tch" (ḏ) above --
        fold to 't'.
      - "sh" is how Budge writes š -- fold to 's'.
-     - "kh" is how Budge writes ḫ -- fold to 'x'. */
+     - "kh" is how Budge writes ḫ -- fold to 'x'.
+     - "e" is the filler/glide vowel Egyptological transliteration inserts
+       between consonants that have no vowel of their own in the actual
+       hieroglyphs (the same reason the manuscript pages' own search drops
+       it) -- Budge uses it inconsistently, so 𓋴𓏏 turns up spelled both "st"
+       and "set" across different entries. Dropped so either spelling, in a
+       stored entry or in what someone types, folds to the same string. */
 function normOldTranslit(s) {
   return (s || '')
     .toLowerCase()
@@ -139,18 +205,64 @@ function normOldTranslit(s) {
     .replace(/[áā]/g, 'ai')
     .replace(/[éē]/g, 'a')
     .replace(/j/g, 'i')
-    .replace(/w/g, 'u');
+    .replace(/w/g, 'u')
+    .replace(/e/g, '');
+}
+
+/* 0 = headword is exactly the query, 1 = headword starts with it, 2 = query
+   turns up somewhere inside the headword (e.g. as part of a compound like
+   "Aakhu-Set-heru-kheru"), 3 = no headword match, only the body/definition
+   text matches. The book's own internal ordering (roughly by hieroglyphic
+   sign group, not Latin alphabetical order) is what's left within a tier, so
+   an exact headword like "set" itself now outranks a compound word that
+   merely contains "set", instead of the two being tied and falling back to
+   whichever happened to come first in the book. */
+function headTier(head, q) {
+  if (!head || !q) return 3;
+  const idx = head.indexOf(q);
+  if (idx === -1) return 3;
+  if (head === q) return 0;
+  if (idx === 0) return 1;
+  return 2;
 }
 
 function render(query) {
   const q = normOldTranslit(query.trim());
-  currentMatches = q ? ENTRIES.filter(e => e._norm.includes(q)) : ENTRIES;
+  isSearching = !!q;
+  if (q) {
+    currentMatches = ENTRIES.filter(e => e._norm.includes(q));
+    currentMatches.forEach(e => { e._tier = headTier(e._head, q); });
+    /* Budge's real dictionary entry for a headword is a run of several
+       consecutive sub-entries sharing one page (e.g. all the senses of "set"
+       cluster on pp.116-117) -- an isolated single hit on some unrelated
+       page, tied on match quality alone, is far more often OCR noise or a
+       stray cross-reference than a real entry. So within the same tier,
+       count how many other matches share this exact page and prefer the
+       page with more of them. */
+    const pageCounts = {};
+    currentMatches.forEach(e => {
+      const key = e._tier + '|' + e.vol + '_' + e.pdf_page;
+      pageCounts[key] = (pageCounts[key] || 0) + 1;
+    });
+    currentMatches.forEach(e => { e._pageCount = pageCounts[e._tier + '|' + e.vol + '_' + e.pdf_page]; });
+    currentMatches.sort((a, b) => {
+      if (a._tier !== b._tier) return a._tier - b._tier;
+      if (a._pageCount !== b._pageCount) return b._pageCount - a._pageCount;
+      /* within the same tier and the same page-density, the shortest
+         headword wins -- a short core word ("st") is a more likely intended
+         match than a long compound that happens to contain the same
+         letters */
+      return a._head.length - b._head.length;
+    });
+  } else {
+    currentMatches = ENTRIES;
+  }
   shown = 0;
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '';
   document.getElementById('stats').textContent =
     (q ? currentMatches.length.toLocaleString() + ' matches' : ENTRIES.length.toLocaleString() + ' entries') +
-    (q ? ' for "' + query + '"' : '');
+    (q ? ' for "' + query + '" (showing the ' + Math.min(SEARCH_LIMIT, currentMatches.length) + ' most likely)' : '');
   if (currentMatches.length === 0) {
     resultsEl.innerHTML = '<div class="empty">No matches.</div>';
     return;
@@ -160,7 +272,8 @@ function render(query) {
 
 function appendMore() {
   const resultsEl = document.getElementById('results');
-  const next = currentMatches.slice(shown, shown + PAGE_SIZE);
+  const pageSize = isSearching ? SEARCH_LIMIT : PAGE_SIZE;
+  const next = currentMatches.slice(shown, shown + pageSize);
   for (const e of next) {
     const div = document.createElement('div');
     div.className = 'entry';
@@ -183,10 +296,13 @@ function appendMore() {
   shown += next.length;
   const old = document.querySelector('.loadmore');
   if (old) old.remove();
+  /* a search still starts capped at the top SEARCH_LIMIT most-likely matches,
+     but "Show more" lets it page further in the same SEARCH_LIMIT-sized
+     increments rather than being a hard cutoff */
   if (shown < currentMatches.length) {
     const btn = document.createElement('button');
     btn.className = 'loadmore';
-    btn.textContent = 'Load ' + Math.min(PAGE_SIZE, currentMatches.length - shown) + ' more (' +
+    btn.textContent = (isSearching ? 'Show ' : 'Load ') + Math.min(pageSize, currentMatches.length - shown) + ' more (' +
       (currentMatches.length - shown).toLocaleString() + ' remaining)';
     btn.onclick = appendMore;
     resultsEl.appendChild(btn);
