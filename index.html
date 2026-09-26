@@ -139,6 +139,7 @@ let currentMatches = [];
 const MAX_CROP_W = 260;
 const SEARCH_LIMIT = 10; // a search shows only its top 10 most-likely matches; browsing without a query still pages through everything
 let isSearching = false;
+let usedFallback = false;
 
 async function load() {
   const res = await fetch('entries.json');
@@ -146,6 +147,8 @@ async function load() {
   ENTRIES.forEach(e => {
     e._norm = normOldTranslit(e.text);
     e._head = normOldTranslit(extractHeadword(e.text));
+    e._headCanon = canonicalizeWeakRuns(e._head);
+    e._headSkel = stripWeak(e._head);
   });
   document.getElementById('stats').textContent = ENTRIES.length.toLocaleString() + ' entries loaded';
   render('');
@@ -175,6 +178,10 @@ function extractHeadword(text) {
      - "tch" is how Budge writes ḏ ("dj") -- same bucket as z/d used elsewhere
        on this site, so fold to 'd'.
      - j has the same value as modern i -- fold to 'i'.
+     - y is Budge's way of writing the doubled reed-leaf sign that modern
+       transliteration spells out as "ii" (or, before the j-fold above runs,
+       "jj") -- folded to that same two-character 'ii' so any of the three
+       spellings match each other.
      - w is written "u" throughout (uai-t, uaua, ua-t, all next to the
        quail-chick sign) -- fold to 'u'.
      - the accent on a (á/ā) is ambiguous: it can stand for either aleph (a)
@@ -194,7 +201,10 @@ function extractHeadword(text) {
        hieroglyphs (the same reason the manuscript pages' own search drops
        it) -- Budge uses it inconsistently, so 𓋴𓏏 turns up spelled both "st"
        and "set" across different entries. Dropped so either spelling, in a
-       stored entry or in what someone types, folds to the same string. */
+       stored entry or in what someone types, folds to the same string.
+     - Budge freely hyphenates between syllables/components ("aau-t",
+       "Au-t-a") where a modern-style query is typed as one solid word --
+       the hyphen carries no sound of its own, so it's dropped entirely. */
 function normOldTranslit(s) {
   return (s || '')
     .toLowerCase()
@@ -205,8 +215,10 @@ function normOldTranslit(s) {
     .replace(/[áā]/g, 'ai')
     .replace(/[éē]/g, 'a')
     .replace(/j/g, 'i')
+    .replace(/y/g, 'ii')
     .replace(/w/g, 'u')
-    .replace(/e/g, '');
+    .replace(/e/g, '')
+    .replace(/-/g, '');
 }
 
 /* 0 = headword is exactly the query, 1 = headword starts with it, 2 = query
@@ -226,43 +238,95 @@ function headTier(head, q) {
   return 2;
 }
 
+/* Budge (1920) sometimes writes the weak letters -- a/i/u, standing in for
+   aleph/yod/w -- in a different order than modern transliteration puts them
+   (e.g. "iAwt" in modern style vs. Budge's "ȧauit", aleph-then-glide
+   instead of glide-then-aleph). No amount of single-letter substitution can
+   bridge an order difference like that, so these are fallbacks, not part of
+   the normal fold, tried only when a direct search finds nothing:
+
+   1. canonicalizeWeakRuns -- sort each run of consecutive weak letters into
+      a fixed order (so "iau" and "aui" become the same "aiu"), but otherwise
+      leave the word alone. This bridges a pure reordering like iAwt/ȧauit
+      while still telling "auit" and "aut" apart, since it only reshuffles
+      weak letters that are already next to each other -- it doesn't add or
+      remove any.
+   2. stripWeak -- deletes every a/i/u outright, down to bare consonants.
+      Much looser (a short word can collapse to one or two letters and match
+      almost anything), so it's only tried if #1 also comes up empty. */
+function canonicalizeWeakRuns(s) {
+  return (s || '').replace(/[aiu]+/g, run => run.split('').sort().join(''));
+}
+function stripWeak(s) {
+  return (s || '').replace(/[aiu]/g, '');
+}
+
+function rankAndSort(matches, tierFn) {
+  matches.forEach(e => { e._tier = tierFn(e); });
+  /* Budge's real dictionary entry for a headword is a run of several
+     consecutive sub-entries sharing one page (e.g. all the senses of "set"
+     cluster on pp.116-117) -- an isolated single hit on some unrelated
+     page, tied on match quality alone, is far more often OCR noise or a
+     stray cross-reference than a real entry. So within the same tier,
+     count how many other matches share this exact page and prefer the
+     page with more of them. */
+  const pageCounts = {};
+  matches.forEach(e => {
+    const key = e._tier + '|' + e.vol + '_' + e.pdf_page;
+    pageCounts[key] = (pageCounts[key] || 0) + 1;
+  });
+  matches.forEach(e => { e._pageCount = pageCounts[e._tier + '|' + e.vol + '_' + e.pdf_page]; });
+  matches.sort((a, b) => {
+    if (a._tier !== b._tier) return a._tier - b._tier;
+    if (a._pageCount !== b._pageCount) return b._pageCount - a._pageCount;
+    /* within the same tier and the same page-density, the shortest
+       headword wins -- a short core word ("st") is a more likely intended
+       match than a long compound that happens to contain the same
+       letters */
+    return a._head.length - b._head.length;
+  });
+}
+
 function render(query) {
   const q = normOldTranslit(query.trim());
   isSearching = !!q;
+  usedFallback = null; // null | 'canon' | 'skel'
   if (q) {
     currentMatches = ENTRIES.filter(e => e._norm.includes(q));
-    currentMatches.forEach(e => { e._tier = headTier(e._head, q); });
-    /* Budge's real dictionary entry for a headword is a run of several
-       consecutive sub-entries sharing one page (e.g. all the senses of "set"
-       cluster on pp.116-117) -- an isolated single hit on some unrelated
-       page, tied on match quality alone, is far more often OCR noise or a
-       stray cross-reference than a real entry. So within the same tier,
-       count how many other matches share this exact page and prefer the
-       page with more of them. */
-    const pageCounts = {};
-    currentMatches.forEach(e => {
-      const key = e._tier + '|' + e.vol + '_' + e.pdf_page;
-      pageCounts[key] = (pageCounts[key] || 0) + 1;
-    });
-    currentMatches.forEach(e => { e._pageCount = pageCounts[e._tier + '|' + e.vol + '_' + e.pdf_page]; });
-    currentMatches.sort((a, b) => {
-      if (a._tier !== b._tier) return a._tier - b._tier;
-      if (a._pageCount !== b._pageCount) return b._pageCount - a._pageCount;
-      /* within the same tier and the same page-density, the shortest
-         headword wins -- a short core word ("st") is a more likely intended
-         match than a long compound that happens to contain the same
-         letters */
-      return a._head.length - b._head.length;
-    });
+    if (currentMatches.length) {
+      rankAndSort(currentMatches, e => headTier(e._head, q));
+    } else {
+      const qCanon = canonicalizeWeakRuns(q);
+      currentMatches = ENTRIES.filter(e => e._headCanon.includes(qCanon));
+      if (currentMatches.length) {
+        usedFallback = 'canon';
+        rankAndSort(currentMatches, e => headTier(e._headCanon, qCanon));
+      } else {
+        const qSkel = stripWeak(q);
+        if (qSkel) {
+          currentMatches = ENTRIES.filter(e => e._headSkel.includes(qSkel));
+          if (currentMatches.length) {
+            usedFallback = 'skel';
+            rankAndSort(currentMatches, e => headTier(e._headSkel, qSkel));
+          }
+        }
+      }
+    }
   } else {
     currentMatches = ENTRIES;
   }
   shown = 0;
   const resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '';
+  const fallbackNote = usedFallback === 'canon'
+    ? ' (no direct match -- showing entries with the same letters, just written in a different order)'
+    : usedFallback === 'skel'
+      ? ' (no direct or reordered match -- showing entries with the same consonants only, very loose)'
+      : ' (showing the ' + Math.min(SEARCH_LIMIT, currentMatches.length) + ' most likely)';
   document.getElementById('stats').textContent =
     (q ? currentMatches.length.toLocaleString() + ' matches' : ENTRIES.length.toLocaleString() + ' entries') +
-    (q ? ' for "' + query + '" (showing the ' + Math.min(SEARCH_LIMIT, currentMatches.length) + ' most likely)' : '');
+    (q ? ' for "' + query + '"' + fallbackNote
+      : '');
   if (currentMatches.length === 0) {
     resultsEl.innerHTML = '<div class="empty">No matches.</div>';
     return;
