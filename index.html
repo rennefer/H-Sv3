@@ -126,7 +126,7 @@
   </div>
 </header>
 <div class="search-wrap">
-  <input id="q" type="text" placeholder="Search raw OCR text… (e.g. a word, a root, a page number)" autofocus>
+  <input id="q" type="text" placeholder="Search in modern MdC (iAwt, Htp) or Budge&#39;s spelling (aau-t, ḥetep)…" autofocus>
   <div id="stats"></div>
 </div>
 <main id="results"></main>
@@ -145,8 +145,8 @@ async function load() {
   const res = await fetch('entries.json');
   ENTRIES = await res.json();
   ENTRIES.forEach(e => {
-    e._norm = normOldTranslit(e.text);
-    e._headTokens = extractHeadTokens(e.text).map(normOldTranslit);
+    e._norm = normStored(e.text);
+    e._headTokens = extractHeadTokens(e.text).map(normStored);
     e._head = e._headTokens[0] || ''; // first token, kept for the length tie-break
     e._headCanon = e._headTokens.map(canonicalizeWeakRuns);
     e._headSkel = e._headTokens.map(stripWeak);
@@ -172,62 +172,106 @@ function extractHeadTokens(text) {
   return words.length ? words : [''];
 }
 
-/* Fold Budge's own (1920) transliteration conventions toward modern MdC, so a
-   search typed in either style still matches. Confirmed against real page
-   crops, not guessed from the OCR text (which frequently hallucinates z/j/y/w
-   out of misread macrons and diacritics):
-     - "tch" is how Budge writes ḏ ("dj") -- same bucket as z/d used elsewhere
-       on this site, so fold to 'd'.
-     - j has the same value as modern i -- fold to 'i'.
-     - y is Budge's way of writing the doubled reed-leaf sign that modern
-       transliteration spells out as "ii" (or, before the j-fold above runs,
-       "jj") -- folded to that same two-character 'ii' so any of the three
-       spellings match each other.
-     - w is written "u" throughout (uai-t, uaua, ua-t, all next to the
-       quail-chick sign) -- fold to 'u'.
-     - the accent on a (á/ā) is ambiguous: it can stand for either aleph (a)
-       or yod (i) depending on the entry, so it's folded to a two-character
-       token that a search for either letter will still find.
-     - é/ē turned out to not be a real thing in Budge's own text (every
-       candidate was an OCR misread of á/ā) -- folded to plain 'a' just in
-       case any genuine instance turns up.
-     - z was checked and doesn't occur as a real letter in Budge's headwords
-       (only as OCR noise), so it's left alone -- no fold needed.
-     - "th" is how Budge writes ṯ ("tj"), distinct from "tch" (ḏ) above --
-       fold to 't'.
-     - "sh" is how Budge writes š -- fold to 's'.
-     - "kh" is how Budge writes ḫ -- fold to 'x'.
-     - "e" is the filler/glide vowel Egyptological transliteration inserts
-       between consonants that have no vowel of their own in the actual
-       hieroglyphs (the same reason the manuscript pages' own search drops
-       it) -- Budge uses it inconsistently, so 𓋴𓏏 turns up spelled both "st"
-       and "set" across different entries. Dropped so either spelling, in a
-       stored entry or in what someone types, folds to the same string.
-     - Budge freely hyphenates between syllables/components ("aau-t",
-       "Au-t-a") where a modern-style query is typed as one solid word --
-       the hyphen carries no sound of its own, so it's dropped entirely.
-     - Budge brackets a letter he's reconstructing/unsure of ("Neb[t]", and
-       OCR sometimes mismatches the bracket pair, e.g. "Neb(t]") -- these
-       carry no sound either and just break substring matching against a
-       plain-text query like "Nebt", so every bracket/paren character is
-       dropped too, the same way the hyphen is. */
-function normOldTranslit(s) {
-  return (s || '')
+/* Budge (1920) alphabet -> modern MdC, as identified letter by letter by the
+   site owner from Budge's own letter-introduction entries (the entry that opens
+   each letter's section of the dictionary):
+
+     Budge  MdC        Budge  MdC        Budge  MdC
+     a      A          f      f          s      s
+     ȧ      i / j      m      m          sh     S
+     ā      a          n      n          q      q
+     i      y          r      r (+ l)    k      k
+     u      w          h      h          g      g
+     b      b          ḥ      H          t      t
+     p      p          kh     x          th     T
+                       kha    X          ṭ      d
+                                         tch    D
+
+   The OCR text in entries.json has lost every diacritic (it holds no ā, ȧ, ḥ,
+   ṭ at all), so a stored "a" may be Budge's a, ȧ or ā; "h" may be h or ḥ; "t"
+   may be t or ṭ; and "kh" may be either kh. Those can't be told apart from the
+   text, so a search simply shows all of them. To do that, both sides are
+   compared in Budge's own flattened spelling:
+
+   normStored() -- Budge text as stored: lower-cased, diacritics stripped, the
+     filler vowel "e" dropped (Budge inserts it between consonants and uses it
+     inconsistently: "st" / "set"), hyphens and brackets dropped.
+
+   queryForms() -- what someone types, read BOTH ways and searched as a union:
+     1. as MdC, case-sensitive (A and a, H and h, S and s, T and t, D and d
+        are different letters), converted letter by letter with the table
+        above into Budge's spelling;
+     2. as Budge's own spelling (e.g. "aau-t", "ḥetep", "shā"), normalised the
+        same way as the stored text. */
+const EGY_UNICODE = { 'ꜣ':'a', 'ꜥ':'a', 'ḫ':'kh', 'ẖ':'kh', 'š':'sh', 'ṯ':'th', 'ḏ':'tch', 'Ḫ':'kh', 'Š':'sh', 'Ṯ':'th', 'Ḏ':'tch' };
+function preEgy(s) {
+  return (s || '').replace(/[ꜣꜥḫẖšṯḏḪŠṮḎ]/g, c => EGY_UNICODE[c] || c);
+}
+function normStored(s) {
+  return preEgy(s)
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toLowerCase()
-    .replace(/tch/g, 'd')
-    .replace(/kh/g, 'x')
-    .replace(/th/g, 't')
-    .replace(/sh/g, 's')
-    .replace(/[áā]/g, 'ai')
-    .replace(/[éē]/g, 'a')
-    .replace(/j/g, 'i')
-    .replace(/y/g, 'ii')
-    .replace(/w/g, 'u')
     .replace(/e/g, '')
     .replace(/-/g, '')
     .replace(/[()\[\]]/g, '');
 }
-
+const MDC_TO_BUDGE = {
+  'A':['a'], 'i':['a'], 'j':['a'], 'a':['a'], 'y':['i'], 'w':['u'], 'u':['u'],
+  'b':['b'], 'p':['p'], 'f':['f'], 'm':['m'], 'n':['n'], 'r':['r'], 'l':['r','l'],
+  'h':['h'], 'H':['h'], 'x':['kh'], 'X':['kh'], 's':['s'], 'z':['s'], 'S':['sh'],
+  'q':['q'], 'k':['k'], 'g':['g'], 't':['t'], 'T':['th'], 'd':['t'], 'D':['tch'],
+};
+const MDC_SKIP = /[-.=:*()\[\]<>]/;
+function mdcToBudge(q) {
+  let forms = [''];
+  for (const ch of preEgy(q)) {
+    if (MDC_SKIP.test(ch)) continue;
+    const opts = MDC_TO_BUDGE[ch] || [/\s/.test(ch) ? ' ' : normStored(ch)];
+    const next = [];
+    forms.forEach(f => opts.forEach(o => next.push(f + o)));
+    forms = next.slice(0, 16);
+  }
+  return forms.map(normStored);
+}
+/* Both readings are always searched ("show both"), but one is ranked first:
+   the MdC reading, unless the query plainly uses Budge's own spelling -- an
+   "e"/"o" vowel, or an accented letter like ā ȧ ḥ ṭ. Matches from the other
+   reading still appear, just half a tier lower. Returns [{v, w}] where w is
+   that rank penalty (0 or 0.5). */
+function looksLikeBudge(q) {
+  return /[eoEO]/.test(q) || /[^\x00-\x7f]/.test(q.normalize('NFC').replace(/[ꜣꜥ]/g, ''));
+}
+/* Words where Budge doesn't follow his own alphabet (confirmed by the site
+   owner). Each rule rewrites part of the letter-by-letter conversion into the
+   spelling Budge actually prints; that spelling is ranked first, and the
+   strict conversion is still searched, just ranked after it. Add more pairs
+   here as they turn up. Both sides are in normStored() form (no "e").
+     nTr "god": strict conversion n-th-r, but Budge prints "neter" (plain t). */
+const BUDGE_IRREGULAR = [
+  ['nthr', 'ntr'],
+];
+function applyIrregular(forms) {
+  const out = []; // [{v, w}] -- Budge's real spelling w=0, strict conversion w=0.25
+  const add = (v, w) => { if (!out.some(o => o.v === v)) out.push({ v, w }); };
+  forms.forEach(f => {
+    let hit = false;
+    BUDGE_IRREGULAR.forEach(([from, to]) => {
+      if (f.includes(from)) { hit = true; add(f.split(from).join(to), 0); }
+    });
+    if (hit) add(f, 0.25);
+  });
+  forms.forEach(f => add(f, 0));
+  return out;
+}
+function queryForms(q) {
+  const mdc = applyIrregular(mdcToBudge(q).map(s => s.replace(/\s+/g, ' ').trim()));
+  const budge = [{ v: normStored(q).replace(/\s+/g, ' ').trim(), w: 0 }];
+  const [first, second] = looksLikeBudge(q) ? [budge, mdc] : [mdc, budge];
+  const out = [];
+  first.forEach(({ v, w }) => { if (v && !out.some(o => o.v === v)) out.push({ v, w }); });
+  second.forEach(({ v, w }) => { if (v && !out.some(o => o.v === v)) out.push({ v, w: w + 0.5 }); });
+  return out;
+}
 /* Tier scale, best (lowest) first:
      0 = the 1st leading token is exactly the query
      1 = the 1st leading token starts with the query
@@ -287,6 +331,36 @@ function stripWeak(s) {
   return (s || '').replace(/[aiu]/g, '');
 }
 
+/* A handful of Budge spellings can't be bridged by any general weak-letter
+   rule without flooding every other search with noise. Confirmed case:
+   modern "iAwt" ("herds, cattle") is stored as Budge's "aau-t" (bk0018L6) --
+   a doubled aleph where modern convention has glide-then-aleph. That's not
+   a reordering (canonicalizeWeakRuns doesn't catch it: "aau"'s letters are
+   {a,a,u}, "iau"'s are {i,a,u} -- different multisets, not just a different
+   order), and the only broader rule that WOULD catch it -- collapsing every
+   run of weak letters down to one placeholder, tried and rejected during
+   testing -- also matched ~9,600 unrelated entries, since "a run of weak
+   letters + a consonant" is an extremely common headword shape here. So
+   rather than a general rule, known irregular pairs like this are listed
+   individually and always checked as extra query spellings, in both
+   directions, alongside whatever the user actually typed. */
+const KNOWN_SYNONYMS = {
+  // (empty) -- the old 'iaut' -> 'aaut' pair is no longer needed: MdC iAwt now
+  // converts letter by letter to Budge's "aaut" (i->a, A->a, w->u, t->t).
+};
+function queryVariants(qForms) {
+  const variants = qForms.slice();
+  const add = (v, w) => { if (!variants.some(o => o.v === v)) variants.push({ v, w }); };
+  qForms.forEach(({ v: q, w }) => {
+    (KNOWN_SYNONYMS[q] || []).forEach(v => add(v, w));
+    Object.keys(KNOWN_SYNONYMS).forEach(k => { if (KNOWN_SYNONYMS[k].includes(q)) add(k, w); });
+  });
+  return variants;
+}
+function bestTier(tokens, variants, tierFn) {
+  return Math.min(...variants.map(({ v, w }) => tierFn(tokens, v) + w));
+}
+
 function rankAndSort(matches, tierFn) {
   matches.forEach(e => { e._tier = tierFn(e); });
   /* Budge's real dictionary entry for a headword is a run of several
@@ -314,26 +388,27 @@ function rankAndSort(matches, tierFn) {
 }
 
 function render(query) {
-  const q = normOldTranslit(query.trim());
+  const q = query.trim();
+  const qVariants = q ? queryVariants(queryForms(q)) : [];
   isSearching = !!q;
   usedFallback = null; // null | 'canon' | 'skel'
   if (q) {
-    currentMatches = ENTRIES.filter(e => e._norm.includes(q));
+    currentMatches = ENTRIES.filter(e => qVariants.some(({ v }) => e._norm.includes(v)));
     if (currentMatches.length) {
-      rankAndSort(currentMatches, e => multiHeadTier(e._headTokens, q));
+      rankAndSort(currentMatches, e => bestTier(e._headTokens, qVariants, multiHeadTier));
     } else {
-      const qCanon = canonicalizeWeakRuns(q);
-      currentMatches = ENTRIES.filter(e => e._headCanon.some(t => t.includes(qCanon)));
+      const qcVariants = qVariants.map(({ v, w }) => ({ v: canonicalizeWeakRuns(v), w }));
+      currentMatches = ENTRIES.filter(e => e._headCanon.some(t => qcVariants.some(({ v }) => t.includes(v))));
       if (currentMatches.length) {
         usedFallback = 'canon';
-        rankAndSort(currentMatches, e => multiHeadTier(e._headCanon, qCanon));
+        rankAndSort(currentMatches, e => bestTier(e._headCanon, qcVariants, multiHeadTier));
       } else {
-        const qSkel = stripWeak(q);
-        if (qSkel) {
-          currentMatches = ENTRIES.filter(e => e._headSkel.some(t => t.includes(qSkel)));
+        const qsVariants = qVariants.map(({ v, w }) => ({ v: stripWeak(v), w })).filter(o => o.v);
+        if (qsVariants.length) {
+          currentMatches = ENTRIES.filter(e => e._headSkel.some(t => qsVariants.some(({ v }) => t.includes(v))));
           if (currentMatches.length) {
             usedFallback = 'skel';
-            rankAndSort(currentMatches, e => multiHeadTier(e._headSkel, qSkel));
+            rankAndSort(currentMatches, e => bestTier(e._headSkel, qsVariants, multiHeadTier));
           }
         }
       }
