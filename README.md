@@ -3,12 +3,12 @@
 Provisional dataset extracted from both volumes of E. A. Wallis Budge's *An Egyptian Hieroglyphic
 Dictionary* (1067 scanned pages total, both columns per page).
 
-## Contents — only 34 files total, no git needed
+## Contents — only 32 files total, no git needed
 
-- `entries.json` — 36,952 raw entry blocks, one per detected dictionary entry.
-- `sheets/` — **31 sprite-sheet JPEGs** (each 3–19MB). Every entry's little crop is packed into one
+- `entries.json` — 29,188 entries, one per dictionary entry (re-segmented and hand-checked; Vol. II re-rendered from the PDF at higher resolution).
+- `sheets/` — **29 sprite-sheet JPEGs** (each 7–14MB). Every entry's little crop is packed into one
   of these instead of being its own file, purely so this is easy to upload — GitHub's web "Add file →
-  Upload files" page handles 34 files fine; it could never handle 37,000.
+  Upload files" page handles 32 files fine; it could never handle 37,000.
 - `index.html` — a static search/browse page. Works as-is once hosted, no build step.
 
 Each `entries.json` record now looks like:
@@ -31,8 +31,8 @@ sheet holding this entry's crop. `index.html` renders it with a plain CSS
 
 1. Go to `https://github.com/rennefer/H-Sv3`.
 2. Delete the existing files (old backup, per rennefer — confirmed OK to remove).
-3. **Add file → Upload files**, then drag in all 34 files from this folder (`entries.json`,
-   `index.html`, `README.md`, and the 31 files inside `sheets/` — keep the `sheets` folder structure,
+3. **Add file → Upload files**, then drag in all 32 files from this folder (`entries.json`,
+   `index.html`, `README.md`, and the 29 files inside `sheets/` — keep the `sheets` folder structure,
    most browsers preserve it when you drag the whole folder in).
 4. Commit.
 5. If GitHub Pages is enabled on the repo, it's live at `https://rennefer.github.io/H-Sv3/` within a

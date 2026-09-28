@@ -117,8 +117,8 @@
 <header>
   <h1>Budge — An Egyptian Hieroglyphic Dictionary (raw extraction)</h1>
   <div class="sub">
-    Provisional, unverified OCR + column-segmentation of both volumes (1067 pages, 36,952 raw entry
-    blocks). Each result shows its own source-page crop so you can check the OCR against the real
+    Provisional OCR + column-segmentation of both volumes (1067 pages, 29,188 entries; crops
+    re-cut and hand-checked page by page). Each result shows its own source-page crop so you can check the OCR against the real
     text. Headwords/transliterations/definitions have <strong>not</strong> been individually parsed or
     checked against the printed book yet — this is a browsing/search tool over the raw pipeline output,
     not a finished dictionary. Images are packed into ~30 sprite sheets (sheets/) rather than 37,000
@@ -378,6 +378,10 @@ function rankAndSort(matches, tierFn) {
   matches.forEach(e => { e._pageCount = pageCounts[e._tier + '|' + e.vol + '_' + e.pdf_page]; });
   matches.sort((a, b) => {
     if (a._tier !== b._tier) return a._tier - b._tier;
+    /* the king list and the list of place names at the end of Vol. II
+       (book pages 917+) come after the main dictionary on equal match */
+    const ax = a.book >= 917 ? 1 : 0, bx = b.book >= 917 ? 1 : 0;
+    if (ax !== bx) return ax - bx;
     if (a._pageCount !== b._pageCount) return b._pageCount - a._pageCount;
     /* within the same tier and the same page-density, the shortest
        headword wins -- a short core word ("st") is a more likely intended
