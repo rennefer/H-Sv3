@@ -131,7 +131,7 @@
     re-cut and hand-checked page by page). Each result shows its own source-page crop so you can check the OCR against the real
     text. Headwords/transliterations/definitions have <strong>not</strong> been individually parsed or
     checked against the printed book yet — this is a browsing/search tool over the raw pipeline output,
-    not a finished dictionary. Images are packed into small tiles (tiles1/, tiles2/) rather than 29,000
+    not a finished dictionary. Images are packed into small tiles (tiles00/ to tiles09/, 20 per folder so each folder can be uploaded on its own) rather than 29,000
     loose files, purely so the dataset is easy to host and upload.
   </div>
 </header>
@@ -512,13 +512,13 @@ function appendMore() {
   }
 }
 
-/* Pictures: each entry's picture sits in a small tile (tiles1/, tiles2/). Tiles are fetched only for
+/* Pictures: each entry's picture sits in a small tile (tiles00/ to tiles09/). Tiles are fetched only for
    entries scrolled into view, decoded one at a time, cut, and let go at once, so the browser never
    holds more than one tile open. The old page put whole 4000x17000 sheets on screen as backgrounds,
    which made browsers run out of memory and crash. */
 const tileFiles = new Map(), want = new Map();
 let busy = false;
-function tileUrl(t){ return (t < 100 ? 'tiles1' : 'tiles2') + '/t' + String(t).padStart(3, '0') + '.jpg'; }
+function tileUrl(t){ return 'tiles' + String(Math.floor(t / 20)).padStart(2, '0') + '/t' + String(t).padStart(3, '0') + '.jpg'; }
 const seen = new IntersectionObserver(list => {
   for (const it of list) if (it.isIntersecting) { seen.unobserve(it.target); const e = it.target._e;
     if (!want.has(e.t)) want.set(e.t, []); want.get(e.t).push(it.target); }
