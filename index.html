@@ -54,6 +54,8 @@
     align-items: flex-start;
   }
   .crop {
+    max-width: 100%;
+    height: auto;
     border: 1px solid var(--border);
     background: #fff;
     flex-shrink: 0;
@@ -105,6 +107,11 @@
   body.embed-mode ::-webkit-scrollbar { width: 10px; height: 10px; }
   body.embed-mode ::-webkit-scrollbar-track { background: var(--bg); }
   body.embed-mode ::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 6px; border: 2px solid var(--bg); }
+  .hw { font-size: 17px; margin-bottom: 3px; }
+  .hw b { color: #c25f2c; font-weight: 700; margin-right: 6px; }
+  .hw i { color: #8a7a62; }
+  .hw .unchk { color: #8a7a62; }
+  .gc { font-family: ui-monospace, Consolas, monospace; font-size: 13px; color: #2f5d8a; margin-bottom: 3px; }
 </style>
 </head>
 <body>
@@ -115,18 +122,21 @@
 </script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <header>
-  <h1>Budge — An Egyptian Hieroglyphic Dictionary (raw extraction)</h1>
+  <h1>Budge — An Egyptian Hieroglyphic Dictionary, modern transliteration</h1>
   <div class="sub">
-    Provisional OCR + column-segmentation of both volumes (1067 pages, 29,188 entries; crops
+    Every entry of both volumes (29,188), each with Budge's own printed entry. The bold headword above each
+    entry is Budge's transliteration turned into modern MdC (Budge's ȧau-t becomes iAwt): about 2,400 were read
+    by hand, the rest by a reader trained on them (about 9 in 10 fully right). Under it, in blue, the Gardiner codes of the entry's first spelling, read by machine from Budge's signs (? = a sign not recognised; check them against the picture). Search by MdC, Budge's spelling or Gardiner codes.
+    Below: provisional OCR + column-segmentation of both volumes (1067 pages; crops
     re-cut and hand-checked page by page). Each result shows its own source-page crop so you can check the OCR against the real
     text. Headwords/transliterations/definitions have <strong>not</strong> been individually parsed or
     checked against the printed book yet — this is a browsing/search tool over the raw pipeline output,
-    not a finished dictionary. Images are packed into ~30 sprite sheets (sheets/) rather than 37,000
+    not a finished dictionary. Images are packed into small tiles (tiles1/, tiles2/) rather than 29,000
     loose files, purely so the dataset is easy to host and upload.
   </div>
 </header>
 <div class="search-wrap">
-  <input id="q" type="text" placeholder="Search in modern MdC (iAwt, Htp) or Budge&#39;s spelling (aau-t, ḥetep)…" autofocus>
+  <input id="q" type="text" placeholder="Search in modern MdC (iAwt, Htp), Budge&#39;s spelling (aau-t, ḥetep) or Gardiner codes (R4 X1 Q3)…" autofocus>
   <div id="stats"></div>
 </div>
 <main id="results"></main>
@@ -134,7 +144,7 @@
 <script>
 let ENTRIES = [];
 let shown = 0;
-const PAGE_SIZE = 60;
+const PAGE_SIZE = 30;
 let currentMatches = [];
 const MAX_CROP_W = 260;
 const SEARCH_LIMIT = 10; // a search shows only its top 10 most-likely matches; browsing without a query still pages through everything
@@ -145,6 +155,7 @@ async function load() {
   const res = await fetch('entries.json');
   ENTRIES = await res.json();
   ENTRIES.forEach(e => {
+    e._mdc = mdcKey(e.mdc); e._hwb = normStored(e.hw || '');
     e._norm = normStored(e.text);
     e._headTokens = extractHeadTokens(e.text).map(normStored);
     e._head = e._headTokens[0] || ''; // first token, kept for the length tie-break
@@ -167,6 +178,10 @@ async function load() {
    check all of them, favouring the first but still finding the real
    headword when it's been pushed a few words in by that kind of bleed. */
 const HEAD_LOOKAHEAD = 6;
+/* the headword as read from the picture, in Budge's spelling (hw) and in modern MdC (mdc); several
+   spellings are separated by commas. Compared without dots, hyphens, brackets, spaces or "?" */
+function normCode(t) { const m = /^([A-Za-z]{1,2})(\d+)([A-Za-z]?)$/.exec(t); if (!m) return t; const p = m[1].length === 2 ? m[1][0].toUpperCase() + m[1][1].toLowerCase() : m[1].toUpperCase(); return p + String(+m[2]) + m[3].toUpperCase(); }
+function mdcKey(s) { return (s || '').split(',').map(x => x.replace(/\(\?\)|[.\-=\s()\[\]?]/g, '')).filter(Boolean); }
 function extractHeadTokens(text) {
   const words = (text || '').trim().split(/\s+/).slice(0, HEAD_LOOKAHEAD);
   return words.length ? words : [''];
@@ -397,10 +412,29 @@ function render(query) {
   isSearching = !!q;
   usedFallback = null; // null | 'canon' | 'skel'
   if (q) {
-    currentMatches = ENTRIES.filter(e => qVariants.some(({ v }) => e._norm.includes(v)));
+    /* first the entries whose headword, in modern MdC or in Budge's spelling, is the query or starts with it */
+    /* Gardiner codes (G17, aa1, several with spaces): the entries whose first spelling has those signs, in that order */
+    if (/^([A-Za-z]{1,2}\d+[A-Za-z]?)(\s+[A-Za-z]{1,2}\d+[A-Za-z]?)*$/.test(q) && /\d/.test(q)) {
+      const want = q.split(/\s+/).map(normCode);
+      currentMatches = ENTRIES.filter(e => { if (!e.gc) return false; const g = e.gc.split(' '); let i = 0; for (const c of g) if (c === want[i]) i++; return i === want.length; });
+      currentMatches.sort((a, b) => (a.gc.split(' ')[0] === want[0] ? 0 : 1) - (b.gc.split(' ')[0] === want[0] ? 0 : 1) || a.gc.length - b.gc.length);
+      shown = 0; const resultsEl0 = document.getElementById('results'); resultsEl0.innerHTML = '';
+      document.getElementById('stats').textContent = currentMatches.length.toLocaleString() + ' entries written with ' + want.join(' ');
+      if (!currentMatches.length) { resultsEl0.innerHTML = '<div class="empty">No matches.</div>'; return; }
+      appendMore(); return;
+    }
+    const qk = mdcKey(q)[0] || '', qb = normStored(q).replace(/\s+/g, '');
+    const headHit = e => (qk && e._mdc.some(m => m === qk)) ? 0 : (qk && e._mdc.some(m => m.startsWith(qk))) ? 1
+      : (qb && looksLikeBudge(q) && e._hwb.replace(/\s+/g, '') === qb) ? 0.5 : null;
+    const direct = ENTRIES.filter(e => headHit(e) !== null);
+    direct.forEach(e => { e._tier = headHit(e) - 2; });
+    direct.sort((a, b) => a._tier - b._tier || (a.book >= 917) - (b.book >= 917) || a._mdc.join().length - b._mdc.join().length);
+    currentMatches = ENTRIES.filter(e => headHit(e) === null && qVariants.some(({ v }) => e._norm.includes(v)));
     if (currentMatches.length) {
       rankAndSort(currentMatches, e => bestTier(e._headTokens, qVariants, multiHeadTier));
-    } else {
+    }
+    if (direct.length) { currentMatches = direct.concat(currentMatches); }
+    else if (!currentMatches.length) {
       const qcVariants = qVariants.map(({ v, w }) => ({ v: canonicalizeWeakRuns(v), w }));
       currentMatches = ENTRIES.filter(e => e._headCanon.some(t => qcVariants.some(({ v }) => t.includes(v))));
       if (currentMatches.length) {
@@ -447,15 +481,15 @@ function appendMore() {
     const div = document.createElement('div');
     div.className = 'entry';
     const vol = e.vol === 'v1' ? 'Vol. I' : 'Vol. II';
-    const sheetFile = 'sheets/sheet_' + String(e.sheet).padStart(3, '0') + '.jpg';
-    const cropDiv = document.createElement('div');
+    const cropDiv = document.createElement('canvas');
     cropDiv.className = 'crop';
-    cropDiv.style.width = e.sw + 'px';
-    cropDiv.style.height = e.sh + 'px';
-    cropDiv.style.backgroundImage = "url('" + sheetFile + "')";
-    cropDiv.style.backgroundPosition = (-e.sx) + 'px ' + (-e.sy) + 'px';
+    cropDiv.width = e.tw; cropDiv.height = e.th;
+    cropDiv.style.width = e.tw + 'px';
+    cropDiv._e = e; seen.observe(cropDiv);
     const textDiv = document.createElement('div');
     textDiv.innerHTML =
+      (e.mdc ? '<div class="hw"><b>' + escapeHtml(e.mdc) + '</b> <i>' + escapeHtml(e.hw) + '</i>' + (e.hwc === 'reader' ? ' <span class="unchk" title="read by machine, not checked by hand">·</span>' : '') + '</div>' : '') +
+      (e.gc ? '<div class="gc" title="Gardiner codes of the first spelling, read by machine; ? = not recognised">' + escapeHtml(e.gc) + '</div>' : '') +
       '<div class="meta">' + vol + ' · PDF p.' + e.pdf_page + ' · ' + e.id + '</div>' +
       '<div class="txt">' + escapeHtml(e.text) + '</div>';
     div.appendChild(cropDiv);
@@ -476,6 +510,36 @@ function appendMore() {
     btn.onclick = appendMore;
     resultsEl.appendChild(btn);
   }
+}
+
+/* Pictures: each entry's picture sits in a small tile (tiles1/, tiles2/). Tiles are fetched only for
+   entries scrolled into view, decoded one at a time, cut, and let go at once, so the browser never
+   holds more than one tile open. The old page put whole 4000x17000 sheets on screen as backgrounds,
+   which made browsers run out of memory and crash. */
+const tileFiles = new Map(), want = new Map();
+let busy = false;
+function tileUrl(t){ return (t < 100 ? 'tiles1' : 'tiles2') + '/t' + String(t).padStart(3, '0') + '.jpg'; }
+const seen = new IntersectionObserver(list => {
+  for (const it of list) if (it.isIntersecting) { seen.unobserve(it.target); const e = it.target._e;
+    if (!want.has(e.t)) want.set(e.t, []); want.get(e.t).push(it.target); }
+  pump();
+}, { rootMargin: '400px' });
+async function pump(){
+  if (busy) return; busy = true;
+  try {
+    while (want.size) {
+      const [t, canvases] = want.entries().next().value; want.delete(t);
+      const live = canvases.filter(c => c.isConnected); if (!live.length) continue;
+      const url = tileUrl(t);
+      if (!tileFiles.has(url)) { tileFiles.set(url, fetch(url).then(r => r.blob()));
+        if (tileFiles.size > 8) tileFiles.delete(tileFiles.keys().next().value); }
+      try {
+        const bm = await createImageBitmap(await tileFiles.get(url));
+        for (const c of live) { const e = c._e; c.getContext('2d').drawImage(bm, e.tx, e.ty, e.tw, e.th, 0, 0, e.tw, e.th); }
+        bm.close();
+      } catch (err) { tileFiles.delete(url); }
+    }
+  } finally { busy = false; }
 }
 
 function escapeHtml(s) {
